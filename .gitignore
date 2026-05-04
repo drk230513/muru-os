@@ -1,0 +1,80 @@
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================
+# Virtual environments
+# ============================================
+venv/
+env/
+ENV/
+.venv/
+
+# ============================================
+# Testing & coverage
+# ============================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+coverage.xml
+*.cover
+
+# ============================================
+# Type checking
+# ============================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# ============================================
+# IDE & editors
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================
+# OS junk
+# ============================================
+.DS_Store
+Thumbs.db
+
+# ============================================
+# Project-specific
+# ============================================
+*.log
+audit/
+data/
+.env
+.env.local
+*.db
+*.sqlite
+
+# Local model files (huge, not committed)
+models/
