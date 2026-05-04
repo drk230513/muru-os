@@ -134,7 +134,7 @@ warn_no_return = true
 
 [[tool.mypy.overrides]]
 # Some libraries don't ship type stubs — relax mypy for them
-module = ["ollama.*"]
+module = "ollama.*"
 ignore_missing_imports = true
 
 # ----- Coverage (when running tests with --cov) -----
