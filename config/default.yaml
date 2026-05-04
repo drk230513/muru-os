@@ -1,0 +1,67 @@
+# ============================================
+# Muru — Default Configuration
+# ============================================
+# These are the default settings shipped with Muru. Users can override
+# any of these by creating ~/.config/muru/config.yaml with the same
+# structure (only include the keys they want to change).
+#
+# Environment variables can override anything here using the format
+# MURU_<SECTION>_<KEY> in upper-case with underscores.
+# Examples:
+#   MURU_LLM_FAST=qwen2.5:14b        overrides llm.fast
+#   MURU_LLM_DEFAULT_PROFILE=deep    overrides llm.default_profile
+#   MURU_LOGGING_LEVEL=DEBUG          overrides logging.level
+
+# ----- LLM (Language Model) settings -----
+llm:
+  # Three named model "profiles" that code can request by purpose.
+  # Each value is the Ollama model tag to use for that profile.
+  # All three can be the same model if you don't want to differentiate.
+  #
+  # fast    — Used for tool selection, routing, simple intents.
+  #           Optimize for latency.
+  # balanced — Used for medium complexity tasks.
+  #           Trade quality for speed reasonably.
+  # deep    — Used for complex reasoning, multi-step planning, code analysis.
+  #           Optimize for quality, accept slowness.
+  fast: "llama3.1:8b"
+  balanced: "llama3.1:8b"
+  deep: "deepseek-r1:70b"
+
+  # Which profile to use when code doesn't specify one.
+  # One of: "fast", "balanced", "deep".
+  default_profile: "fast"
+
+  # Where Ollama is running. Default is the local Ollama server.
+  host: "http://localhost:11434"
+
+  # How long to wait for a response (seconds).
+  # 70B models on consumer hardware can take 60+ seconds, so be generous.
+  timeout_seconds: 300
+
+  # Sampling temperature (0.0 = deterministic, 1.0 = creative).
+  # For tool selection we want low; for creative tasks higher.
+  temperature: 0.2
+
+  # How many times to retry on malformed/incomplete responses.
+  max_retries: 3
+
+# ----- Logging settings -----
+logging:
+  # Minimum log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+
+  # Output format: "human" (colorized) or "json" (one JSON object per line)
+  format: "human"
+
+  # Optional path to log file (in addition to stdout). Empty = stdout only.
+  file: ""
+
+# ----- Path settings -----
+paths:
+  # Where Muru writes its runtime data (audit log, undo history, etc.).
+  # The leading ~ is expanded to the user's home directory.
+  data_dir: "~/.local/share/muru"
+
+  # Where Muru looks for user configuration overrides.
+  config_dir: "~/.config/muru"
