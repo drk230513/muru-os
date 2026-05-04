@@ -80,6 +80,7 @@ include = ["muru*"]
 minversion = "8.0"
 addopts = [
     "-ra",                    # Show summary of all test outcomes
+    "-m", "not integration",   # Skip integration tests by default
     "--strict-markers",       # Fail if undefined pytest markers used
     "--strict-config",        # Fail if pytest config has errors
     "--showlocals",           # Show local variables in tracebacks
@@ -89,6 +90,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_functions = ["test_*"]
 python_classes = ["Test*"]
+markers = [
+    "integration: marks tests as requiring external services",
+]
 
 # ----- ruff (linter + formatter) -----
 [tool.ruff]
@@ -113,6 +117,10 @@ select = [
 ignore = [
     "E501",   # Line too long (handled by formatter)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files often use PascalCase for mock variables representing classes.
+"tests/**/*.py" = ["N806"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -89,6 +89,11 @@ def configure_logging(
         force=True,  # Override any prior config (e.g., from imported libs)
     )
 
+    # Suppress noisy debug-level logs from third-party HTTP libraries.
+    # These libraries log every HTTP request at INFO, which clutters our output.
+    for noisy_logger in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
     # Build the chain of structlog processors.
     # Each processor receives an event dict and returns a (possibly modified) one.
     # Order matters — they run top to bottom.
