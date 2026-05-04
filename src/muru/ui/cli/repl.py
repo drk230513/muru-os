@@ -1,11 +1,12 @@
 """Interactive REPL (read-eval-print loop) for Muru.
 
-The REPL reads natural-language input from the user, sends it to the LLM,
-and prints the response. This is the v0.1.0 placeholder for what will
-eventually become a sophisticated planner + tool execution loop.
+The REPL is the user-facing entry point. It reads natural-language input,
+hands it to the Orchestrator, and prints the response.
 
-For now, the LLM responds in pure conversational mode — no tool execution,
-no risk classification, no confirmation. Those land in v0.2.0+.
+In v0.1.0 this was a simple LLM chat loop. In v0.2.0+ the REPL routes
+every intent through the planner+executor pipeline, so Muru can call
+real tools (filesystem operations, etc.) when the LLM decides one is
+needed.
 
 Usage:
     from muru.ui.cli.repl import run_repl
@@ -24,55 +25,56 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from muru.llm.client import LLMClient
-from muru.llm.exceptions import LLMError
+from muru.orchestrator.orchestrator import Orchestrator
+from muru.planner.planner import Planner
+from muru.tools import filesystem  # noqa: F401  — auto-registers filesystem tools
+from muru.tools.registry import registry as default_registry
 from muru.utils.logging import get_logger
 
 log = get_logger(__name__)
 
 
-# System message gives the LLM context about who it is and how to behave.
-# Will become much more sophisticated in v0.2.0+ when we add tools.
-DEFAULT_SYSTEM_MESSAGE = """You are Muru, an AI-native operating system assistant.
-
-You are currently in your foundation release (v0.1.0). You can hold a
-conversation but cannot yet execute actions on the user's computer —
-that capability is coming in future versions.
-
-Be concise, friendly, and direct. If a user asks you to do something
-that requires running commands or modifying files, explain that those
-capabilities are not yet enabled but will be added in upcoming versions."""
-
-# Special commands the REPL handles directly (not sent to the LLM).
+# Special commands the REPL handles directly (not sent to the orchestrator).
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 HELP_COMMANDS = {"help", "/help", "?"}
 
 
-def _print_welcome(console: Console, model: str) -> None:
+def _print_welcome(console: Console, model: str, tool_count: int) -> None:
     """Print the startup banner."""
     welcome = Panel.fit(
-        "[bold cyan]Muru[/bold cyan] [dim]v0.1.0 — foundation release[/dim]\n\n"
+        "[bold cyan]Muru[/bold cyan] [dim]v0.2.0 — read-only tool release[/dim]\n\n"
         f"Model: [yellow]{model}[/yellow]\n"
+        f"Tools loaded: [green]{tool_count}[/green]\n"
         "Type [bold]help[/bold] for commands, [bold]exit[/bold] to quit.\n"
-        "[dim]Note: tool execution lands in v0.2.0+. For now, conversation only.[/dim]",
+        "[dim]Muru can now read files, list directories, and search content.[/dim]",
         title="🌱 Welcome",
         border_style="cyan",
     )
     console.print(welcome)
 
 
-def _print_help(console: Console) -> None:
+def _print_help(console: Console, tool_names: list[str]) -> None:
     """Print the help message."""
-    help_text = """
+    tools_list = "\n".join(f"  • [cyan]{name}[/cyan]" for name in tool_names)
+    help_text = f"""
 [bold]Commands:[/bold]
   [cyan]help[/cyan]            Show this message
   [cyan]exit[/cyan] / [cyan]quit[/cyan]    Exit Muru
 
 [bold]How to use:[/bold]
-  Just type what you want, in plain English. Muru will respond.
-  Multi-line input not supported yet — one line at a time.
+  Just type what you want, in plain English. Muru will decide whether
+  to respond directly or call one of its tools to look something up.
 
-[bold]Coming in v0.2.0+:[/bold]
-  - File operations (read, list, search)
+[bold]Available tools:[/bold]
+{tools_list}
+
+[bold]Example questions:[/bold]
+  • What python files are in my muru-os/src folder?
+  • Find files containing the word "Pydantic" in muru-os
+  • Show me the contents of my README.md
+  • What does the file ~/notes.txt contain?
+
+[bold]Coming in v0.3.0+:[/bold]
   - Risk classification + confirmation engine
   - Audit log + undo
   - Sandboxed shell access
@@ -81,13 +83,8 @@ def _print_help(console: Console) -> None:
 
 
 def _read_input(console: Console) -> str:
-    """Read one line of input from the user.
-
-    Returns the trimmed input string. Returns empty string on EOF (Ctrl-D)
-    so the caller can exit gracefully.
-    """
+    """Read one line of input from the user."""
     try:
-        # Rich's input() handles colored prompts properly across terminals
         return console.input("[bold green]you ›[/bold green] ").strip()
     except EOFError:
         return ""
@@ -95,81 +92,78 @@ def _read_input(console: Console) -> str:
 
 def run_repl(
     client: LLMClient,
-    system_message: str | None = None,
     console: Console | None = None,
 ) -> None:
     """Run the interactive REPL until the user exits.
 
     Args:
-        client: The LLMClient to send messages to.
-        system_message: Optional override for the system message. If None,
-            uses DEFAULT_SYSTEM_MESSAGE.
+        client: The LLMClient to use for both planning and summarization.
         console: Optional Rich Console. If None, creates a default one.
             Pass a custom console for testing.
     """
     console = console or Console()
-    system = system_message if system_message is not None else DEFAULT_SYSTEM_MESSAGE
 
-    model = client._resolve_model(None)  # The default-profile model
-    _print_welcome(console, model)
+    # Build the orchestrator stack
+    planner = Planner(llm=client, registry=default_registry)
+    orchestrator = Orchestrator(
+        llm=client,
+        planner=planner,
+        registry=default_registry,
+    )
 
-    log.info("repl_started", model=model)
+    model = client._resolve_model(None)
+    tool_names = default_registry.list_names()
+    _print_welcome(console, model, len(tool_names))
 
-    # Conversation history — grows as the user and assistant exchange messages.
-    # In v0.1.0 we keep this simple: just user/assistant turns, plus the
-    # initial system message. v0.2.0+ adds context summarization for long chats.
-    history: list[dict[str, str]] = [{"role": "system", "content": system}]
+    log.info("repl_started", model=model, tool_count=len(tool_names))
 
     while True:
         user_input = _read_input(console)
 
-        # Empty input (or EOF) — ask again, or exit on EOF
         if not user_input:
             console.print("[dim](use 'exit' to quit)[/dim]")
             continue
 
-        # Handle built-in commands without calling the LLM
         lowered = user_input.lower()
         if lowered in EXIT_COMMANDS:
             console.print("[dim]Goodbye.[/dim]")
             log.info("repl_exited", reason="user_command")
             return
         if lowered in HELP_COMMANDS:
-            _print_help(console)
+            _print_help(console, tool_names)
             continue
 
-        # Append user message to history
-        history.append({"role": "user", "content": user_input})
-
-        # Send the whole history to the LLM (system + all turns so far)
+        # Hand off to the orchestrator
         try:
             with console.status("[dim]Muru is thinking...[/dim]", spinner="dots"):
-                response = client.chat(history)
-        except LLMError as e:
+                result = orchestrator.handle(user_input)
+        except KeyboardInterrupt:
+            console.print("\n[dim](interrupted)[/dim]")
+            continue
+        except Exception as e:
+            # Orchestrator should not raise, but defend against bugs
+            log.error("repl_orchestrator_unhandled_exception", error=str(e))
             console.print(
                 Panel(
-                    f"[red]LLM error:[/red] {e}\n\n"
-                    "[dim]Your message was not added to history. Try again.[/dim]",
+                    f"[red]Unexpected error:[/red] {e}\n\n"
+                    "[dim]This is a bug. Please report it.[/dim]",
                     title="Error",
                     border_style="red",
                 )
             )
-            # Roll back the user message — it never got a response
-            history.pop()
-            continue
-        except KeyboardInterrupt:
-            console.print("\n[dim](interrupted — message not sent)[/dim]")
-            history.pop()
             continue
 
-        # Append assistant response to history so it has context next turn
-        history.append({"role": "assistant", "content": response})
-
-        # Render assistant response with markdown formatting
-        # (LLMs often produce markdown — bold, lists, code blocks)
+        # Render the response
         console.print()
         console.print("[bold magenta]muru ›[/bold magenta]")
-        console.print(Markdown(response))
+
+        if result.error:
+            # Show errors in a different color but keep the friendly message
+            console.print(Markdown(result.final_response))
+            console.print(f"[dim red]({result.error})[/dim red]")
+        else:
+            console.print(Markdown(result.final_response))
+
         console.print()
 
 
@@ -190,7 +184,6 @@ def main_repl_loop() -> int:
         console.print(f"[red]Failed to load config:[/red] {e}")
         return 1
 
-    # Configure logging based on user's config
     configure_logging(
         level=config.logging.level,
         json_output=(config.logging.format == "json"),
@@ -199,7 +192,6 @@ def main_repl_loop() -> int:
 
     client = LLMClient(config.llm)
 
-    # Quick health check before launching the REPL
     if not client.is_available():
         console.print(
             Panel(
@@ -223,4 +215,4 @@ def main_repl_loop() -> int:
     return 0
 
 
-__all__ = ["DEFAULT_SYSTEM_MESSAGE", "main_repl_loop", "run_repl"]
+__all__ = ["main_repl_loop", "run_repl"]
