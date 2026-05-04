@@ -69,7 +69,7 @@ Thumbs.db
 # Project-specific
 # ============================================
 *.log
-audit/
+/audit/
 data/
 .env
 .env.local
