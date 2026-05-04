@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from muru.policy.risk import RiskTier
 from muru.tools.base import Tool, ToolResult
 from muru.tools.filesystem._safety import PathSecurityError, safe_resolve
 
@@ -183,6 +184,7 @@ get_file_info_tool: Tool[GetFileInfoArgs, GetFileInfoResult] = Tool(
     args_model=GetFileInfoArgs,
     result_model=GetFileInfoResult,
     implementation=_get_file_info_impl,
+    risk_tier=RiskTier.READ_ONLY,
 )
 
 

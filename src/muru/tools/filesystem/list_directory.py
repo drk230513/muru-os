@@ -14,6 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from muru.policy.risk import RiskTier
 from muru.tools.base import Tool, ToolResult
 from muru.tools.filesystem._safety import PathSecurityError, safe_resolve
 
@@ -208,6 +209,7 @@ list_directory_tool: Tool[ListDirectoryArgs, ListDirectoryResult] = Tool(
     args_model=ListDirectoryArgs,
     result_model=ListDirectoryResult,
     implementation=_list_directory_impl,
+    risk_tier=RiskTier.READ_ONLY,
 )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from muru.policy.risk import RiskTier
 from muru.tools.base import Tool, ToolResult
 from muru.tools.filesystem._safety import PathSecurityError, safe_resolve
 
@@ -157,6 +158,7 @@ read_file_tool: Tool[ReadFileArgs, ReadFileResult] = Tool(
     args_model=ReadFileArgs,
     result_model=ReadFileResult,
     implementation=_read_file_impl,
+    risk_tier=RiskTier.READ_ONLY,
 )
 
 

@@ -44,6 +44,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
+from muru.policy.risk import RiskTier
 from muru.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -102,6 +103,7 @@ class Tool(Generic[ArgsT, ResultT]):
         args_model: type[ArgsT],
         result_model: type[ResultT],
         implementation: Callable[[ArgsT], ResultT],
+        risk_tier: RiskTier = RiskTier.READ_ONLY,
     ) -> None:
         if not name or not name.replace("_", "").isalnum():
             raise ValueError(f"Tool name must be non-empty alphanumeric/underscore, got {name!r}")
@@ -112,6 +114,7 @@ class Tool(Generic[ArgsT, ResultT]):
         self.description = description
         self.args_model = args_model
         self.result_model = result_model
+        self.risk_tier = risk_tier
         self._implementation = implementation
 
     def invoke(self, raw_args: dict[str, Any]) -> ResultT:
@@ -158,6 +161,8 @@ class Tool(Generic[ArgsT, ResultT]):
         return {
             "name": self.name,
             "description": self.description,
+            "risk_tier": int(self.risk_tier),
+            "risk_tier_label": self.risk_tier.display_name,
             "parameters": self.args_model.model_json_schema(),
         }
 

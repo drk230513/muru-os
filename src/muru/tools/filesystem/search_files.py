@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from muru.policy.risk import RiskTier
 from muru.tools.base import Tool, ToolResult
 from muru.tools.filesystem._safety import PathSecurityError, safe_resolve
 
@@ -261,6 +262,7 @@ search_files_tool: Tool[SearchFilesArgs, SearchFilesResult] = Tool(
     args_model=SearchFilesArgs,
     result_model=SearchFilesResult,
     implementation=_search_files_impl,
+    risk_tier=RiskTier.READ_ONLY,
 )
 
 
