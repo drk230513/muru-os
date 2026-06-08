@@ -49,7 +49,7 @@ llm:
 # ----- Logging settings -----
 logging:
   # Minimum log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  level: "INFO"
+  level: "WARNING"
 
   # Output format: "human" (colorized) or "json" (one JSON object per line)
   format: "human"

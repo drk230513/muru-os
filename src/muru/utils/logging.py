@@ -47,11 +47,13 @@ def configure_logging(
     level: str = "INFO",
     json_output: bool = False,
     log_file: str | None = None,
+    force: bool = False,
 ) -> None:
     """Configure structlog and stdlib logging for the entire application.
 
-    Call this exactly once, at the start of the application. Calling it
-    multiple times is safe but only the first call has effect.
+    Call this once at the start of the application. Subsequent calls
+    are no-ops unless force=True is passed (useful when an explicit config
+    needs to override an earlier auto-configure from get_logger()).
 
     Args:
         level: Minimum log level to emit. One of: DEBUG, INFO, WARNING,
@@ -61,12 +63,16 @@ def configure_logging(
             development).
         log_file: Optional path to a file to additionally write logs to.
             If None, logs go only to stdout.
+        force: If True, reconfigure even if logging has already been set up.
+            Used by the main entry point to override the auto-configure that
+            happens implicitly when get_logger() is called before any explicit
+            configure_logging() call.
 
     Raises:
         ValueError: If `level` is not a valid log level name.
     """
     global _configured
-    if _configured:
+    if _configured and not force:
         return
 
     # Validate level early with a clear error message

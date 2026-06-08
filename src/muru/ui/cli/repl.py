@@ -1,21 +1,16 @@
 """Interactive REPL (read-eval-print loop) for Muru.
 
-The REPL is the user-facing entry point. It reads natural-language input,
-hands it to the Orchestrator, and prints the response.
+The REPL is the user-facing entry point. It reads natural-language
+input, hands it to the Orchestrator, and prints the response.
 
-In v0.1.0 this was a simple LLM chat loop. In v0.2.0+ the REPL routes
-every intent through the planner+executor pipeline, so Muru can call
-real tools (filesystem operations, etc.) when the LLM decides one is
-needed.
+In v0.3.0+ the REPL:
+- Constructs a CliConfirmationProvider that the orchestrator uses
+  to ask the user before invoking medium/high/critical risk tools
+- Maintains conversation history across turns so multi-step
+  reasoning works ("list my Downloads" -> "now show the biggest one")
+- Adds a `clear` command to reset history
 
-Usage:
-    from muru.ui.cli.repl import run_repl
-    from muru.llm.client import LLMClient
-    from muru.utils.config import load_config
-
-    config = load_config()
-    client = LLMClient(config.llm)
-    run_repl(client)
+All existing v0.2.0 commands (help, exit, quit) continue to work.
 """
 
 from __future__ import annotations
@@ -24,30 +19,31 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from muru.llm.client import LLMClient
+from muru.llm.client import ChatMessage, LLMClient
 from muru.orchestrator.orchestrator import Orchestrator
 from muru.planner.planner import Planner
-from muru.tools import filesystem  # noqa: F401  — auto-registers filesystem tools
+from muru.policy.confirmation.cli import CliConfirmationProvider
+from muru.tools import filesystem  # noqa: F401 - auto-registers filesystem tools
 from muru.tools.registry import registry as default_registry
 from muru.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-
-# Special commands the REPL handles directly (not sent to the orchestrator).
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 HELP_COMMANDS = {"help", "/help", "?"}
+CLEAR_COMMANDS = {"clear", "/clear", "reset", "/reset"}
 
 
 def _print_welcome(console: Console, model: str, tool_count: int) -> None:
     """Print the startup banner."""
     welcome = Panel.fit(
-        "[bold cyan]Muru[/bold cyan] [dim]v0.2.0 — read-only tool release[/dim]\n\n"
+        "[bold cyan]Muru[/bold cyan] [dim]v0.3.0 - confirmation + conversation[/dim]\n\n"
         f"Model: [yellow]{model}[/yellow]\n"
         f"Tools loaded: [green]{tool_count}[/green]\n"
         "Type [bold]help[/bold] for commands, [bold]exit[/bold] to quit.\n"
-        "[dim]Muru can now read files, list directories, and search content.[/dim]",
-        title="🌱 Welcome",
+        "[dim]Muru now remembers context across turns and asks "
+        "before risky actions.[/dim]",
+        title="Welcome",
         border_style="cyan",
     )
     console.print(welcome)
@@ -55,27 +51,28 @@ def _print_welcome(console: Console, model: str, tool_count: int) -> None:
 
 def _print_help(console: Console, tool_names: list[str]) -> None:
     """Print the help message."""
-    tools_list = "\n".join(f"  • [cyan]{name}[/cyan]" for name in tool_names)
+    tools_list = "\n".join(f"  - [cyan]{name}[/cyan]" for name in tool_names)
     help_text = f"""
 [bold]Commands:[/bold]
   [cyan]help[/cyan]            Show this message
+  [cyan]clear[/cyan]           Clear conversation history (start fresh)
   [cyan]exit[/cyan] / [cyan]quit[/cyan]    Exit Muru
 
 [bold]How to use:[/bold]
-  Just type what you want, in plain English. Muru will decide whether
-  to respond directly or call one of its tools to look something up.
+  Just type what you want, in plain English. Muru remembers what
+  you said earlier in the conversation, so follow-up questions work.
 
 [bold]Available tools:[/bold]
 {tools_list}
 
-[bold]Example questions:[/bold]
-  • What python files are in my muru-os/src folder?
-  • Find files containing the word "Pydantic" in muru-os
-  • Show me the contents of my README.md
-  • What does the file ~/notes.txt contain?
+[bold]Example multi-step session:[/bold]
+  you > what files are in my Downloads?
+  muru > [lists files]
+  you > tell me more about the biggest one
+  muru > [reads the file]
 
-[bold]Coming in v0.3.0+:[/bold]
-  - Risk classification + confirmation engine
+[bold]Coming in v0.4.0+:[/bold]
+  - Write/edit/delete file tools (with confirmation prompts)
   - Audit log + undo
   - Sandboxed shell access
 """
@@ -85,7 +82,7 @@ def _print_help(console: Console, tool_names: list[str]) -> None:
 def _read_input(console: Console) -> str:
     """Read one line of input from the user."""
     try:
-        return console.input("[bold green]you ›[/bold green] ").strip()
+        return console.input("[bold green]you >[/bold green] ").strip()
     except EOFError:
         return ""
 
@@ -97,25 +94,34 @@ def run_repl(
     """Run the interactive REPL until the user exits.
 
     Args:
-        client: The LLMClient to use for both planning and summarization.
-        console: Optional Rich Console. If None, creates a default one.
-            Pass a custom console for testing.
+        client: The LLMClient to use for planning and summarization.
+        console: Optional Rich Console. Pass a custom one for testing.
     """
     console = console or Console()
 
-    # Build the orchestrator stack
+    # Build the full stack: planner -> orchestrator -> confirmation
+    confirmation_provider = CliConfirmationProvider(console=console)
     planner = Planner(llm=client, registry=default_registry)
     orchestrator = Orchestrator(
         llm=client,
         planner=planner,
         registry=default_registry,
+        confirmation_provider=confirmation_provider,
     )
 
     model = client._resolve_model(None)
     tool_names = default_registry.list_names()
     _print_welcome(console, model, len(tool_names))
 
-    log.info("repl_started", model=model, tool_count=len(tool_names))
+    log.info(
+        "repl_started",
+        model=model,
+        tool_count=len(tool_names),
+    )
+
+    # Conversation history: user/assistant message turns.
+    # System prompts are constructed fresh by the planner each turn.
+    history: list[ChatMessage] = []
 
     while True:
         user_input = _read_input(console)
@@ -132,16 +138,20 @@ def run_repl(
         if lowered in HELP_COMMANDS:
             _print_help(console, tool_names)
             continue
+        if lowered in CLEAR_COMMANDS:
+            history.clear()
+            console.print("[dim]Conversation history cleared.[/dim]")
+            log.info("repl_history_cleared")
+            continue
 
-        # Hand off to the orchestrator
+        # Hand off to the orchestrator with the current history
         try:
             with console.status("[dim]Muru is thinking...[/dim]", spinner="dots"):
-                result = orchestrator.handle(user_input)
+                result = orchestrator.handle(user_input, history=list(history))
         except KeyboardInterrupt:
             console.print("\n[dim](interrupted)[/dim]")
             continue
         except Exception as e:
-            # Orchestrator should not raise, but defend against bugs
             log.error("repl_orchestrator_unhandled_exception", error=str(e))
             console.print(
                 Panel(
@@ -155,16 +165,21 @@ def run_repl(
 
         # Render the response
         console.print()
-        console.print("[bold magenta]muru ›[/bold magenta]")
+        console.print("[bold magenta]muru >[/bold magenta]")
 
         if result.error:
-            # Show errors in a different color but keep the friendly message
             console.print(Markdown(result.final_response))
             console.print(f"[dim red]({result.error})[/dim red]")
         else:
             console.print(Markdown(result.final_response))
 
         console.print()
+
+        # Append to history only on successful, non-error turns.
+        # Errored turns are not added so they don't pollute future planning.
+        if not result.error:
+            history.append({"role": "user", "content": user_input})
+            history.append({"role": "assistant", "content": result.final_response})
 
 
 def main_repl_loop() -> int:
@@ -188,6 +203,7 @@ def main_repl_loop() -> int:
         level=config.logging.level,
         json_output=(config.logging.format == "json"),
         log_file=config.logging.file or None,
+        force=True,
     )
 
     client = LLMClient(config.llm)
