@@ -100,3 +100,55 @@ def test_correction_message_truncates_long_response() -> None:
     long = "x" * 5000
     msg = build_correction_message("err", long)
     assert "(truncated)" in msg
+
+
+# ============================================
+# v0.3.1 prompt-tuning guarantees
+# ============================================
+
+
+def test_prompt_includes_recursive_guidance() -> None:
+    """The planner must guide LLMs toward recursive=true for project folders.
+
+    Regression guard for v0.3.0's bug where Llama 3.1 8B defaulted
+    recursive=False on 'files in my X folder' queries.
+    """
+    from muru.planner.prompts import PLANNER_SYSTEM_TEMPLATE
+
+    assert "recursive=true" in PLANNER_SYSTEM_TEMPLATE
+    assert "Top-level-only" in PLANNER_SYSTEM_TEMPLATE
+
+
+def test_prompt_includes_tilde_slash_guidance() -> None:
+    """The planner must guide LLMs to use '~/' not '~name'.
+
+    Regression guard for v0.3.0 where Llama produced '~muru-os'
+    (no slash), which caused 'Could not determine home directory' errors.
+    """
+    from muru.planner.prompts import PLANNER_SYSTEM_TEMPLATE
+
+    assert '"~/" with a slash' in PLANNER_SYSTEM_TEMPLATE
+    assert '"~muru-os"' in PLANNER_SYSTEM_TEMPLATE  # the wrong form, called out as bad
+
+
+def test_prompt_includes_history_first_section() -> None:
+    """The prompt must instruct the LLM to use conversation history before re-running tools.
+
+    Without this, every follow-up question runs a fresh tool call.
+    """
+    from muru.planner.prompts import PLANNER_SYSTEM_TEMPLATE
+
+    assert "USING CONVERSATION HISTORY" in PLANNER_SYSTEM_TEMPLATE
+    assert "DO NOT call a tool again" in PLANNER_SYSTEM_TEMPLATE
+
+
+def test_prompt_includes_recursive_example() -> None:
+    """Concrete example of when to use recursive=true must be present.
+
+    Examples teach better than prose. The 'count python files in muru-os'
+    example shows Llama the right shape to copy.
+    """
+    from muru.planner.prompts import PLANNER_SYSTEM_TEMPLATE
+
+    assert "count python files" in PLANNER_SYSTEM_TEMPLATE
+    assert '"recursive": true' in PLANNER_SYSTEM_TEMPLATE

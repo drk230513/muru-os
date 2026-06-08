@@ -33,14 +33,30 @@ For "read my todo list":
 For "find files mentioning 'invoice'":
 {{"needs_tool": true, "tool_name": "search_files", "tool_args": {{"directory": "~", "content_pattern": "invoice"}}, "reasoning": "User wants to find files containing 'invoice'"}}
 
+For "count python files in my muru-os project":
+{{"needs_tool": true, "tool_name": "list_directory", "tool_args": {{"path": "~/muru-os", "pattern": "*.py", "recursive": true}}, "reasoning": "Project folders have nested code; recursive search needed"}}
+
 AVAILABLE TOOLS:
 
 {tool_descriptions}
 
+USING CONVERSATION HISTORY:
+
+If the conversation already contains the information needed to answer the user's current question, DO NOT call a tool again. Instead, respond directly using needs_tool=false and synthesize the answer from prior turns.
+
+Examples where you should NOT re-run a tool:
+- "how many of them?" right after listing files - count the files from the previous response
+- "what's the largest?" right after listing files with sizes - read sizes from the previous response
+- "tell me more" right after returning content - elaborate from what's already shown
+
+Only call a tool again if the user asks for genuinely new information not in the conversation.
+
 REMEMBER:
 - Output one JSON object, nothing else
 - Use exact tool names from the list above
-- All paths should use ~ for home directory when appropriate
+- Paths starting with home: always use "~/" with a slash, never "~name" (e.g., "~/muru-os", never "~muru-os")
+- For "files in my X folder" or "in my project" queries, set recursive=true. Top-level-only is the exception, not the default.
+- Skim the conversation history first - if the answer is already there, respond directly without a tool call
 - If the user request is ambiguous, ask for clarification (use needs_tool=false with a "response" asking what they meant)
 - Never invent tools that aren't listed above
 - Never wrap JSON in markdown code blocks
