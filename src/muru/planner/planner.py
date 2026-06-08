@@ -67,7 +67,11 @@ class Planner:
         self._registry = registry
         self._max_retries = max_retries
 
-    def plan(self, user_intent: str) -> Plan:
+    def plan(
+        self,
+        user_intent: str,
+        history: list[ChatMessage] | None = None,
+    ) -> Plan:
         """Produce a Plan for the given user intent.
 
         Args:
@@ -88,11 +92,13 @@ class Planner:
         tool_schemas = self._registry.schemas_for_llm()
         system_prompt = build_planner_system_prompt(tool_schemas)
 
-        # Build the conversation: system + user
+        # Build the conversation: system + history + current user turn
         messages: list[ChatMessage] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_intent},
         ]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_intent})
 
         log.info(
             "planner_request",
