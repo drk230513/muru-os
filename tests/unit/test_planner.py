@@ -134,3 +134,59 @@ def test_planner_passes_system_prompt_with_tools(
     system = messages[0]
     assert system["role"] == "system"
     assert "dummy" in system["content"]
+
+
+# ============================================
+# Conversation history support (v0.3.0)
+# ============================================
+
+
+def test_planner_includes_history_in_messages(
+    mock_llm: MagicMock, registry_with_one_tool: ToolRegistry
+) -> None:
+    """When history is given, it should appear in the LLM message list."""
+    mock_llm.chat.return_value = '{"needs_tool": false, "response": "hi"}'
+
+    history = [
+        {"role": "user", "content": "what files are in Downloads?"},
+        {"role": "assistant", "content": "There are 3 files."},
+    ]
+
+    planner = Planner(llm=mock_llm, registry=registry_with_one_tool)
+    planner.plan("now show me the biggest one", history=history)
+
+    sent_messages = mock_llm.chat.call_args[0][0]
+    # System prompt + 2 history turns + current user turn = 4 messages
+    assert len(sent_messages) == 4
+    assert sent_messages[0]["role"] == "system"
+    assert sent_messages[1]["content"] == "what files are in Downloads?"
+    assert sent_messages[2]["content"] == "There are 3 files."
+    assert sent_messages[3]["content"] == "now show me the biggest one"
+
+
+def test_planner_works_without_history(
+    mock_llm: MagicMock, registry_with_one_tool: ToolRegistry
+) -> None:
+    """No history -> just system + current user turn (existing v0.2 behavior)."""
+    mock_llm.chat.return_value = '{"needs_tool": false, "response": "hi"}'
+
+    planner = Planner(llm=mock_llm, registry=registry_with_one_tool)
+    planner.plan("hello")
+
+    sent_messages = mock_llm.chat.call_args[0][0]
+    assert len(sent_messages) == 2  # system + user
+    assert sent_messages[0]["role"] == "system"
+    assert sent_messages[1]["content"] == "hello"
+
+
+def test_planner_history_can_be_empty_list(
+    mock_llm: MagicMock, registry_with_one_tool: ToolRegistry
+) -> None:
+    """Empty list history should be treated the same as None."""
+    mock_llm.chat.return_value = '{"needs_tool": false, "response": "hi"}'
+
+    planner = Planner(llm=mock_llm, registry=registry_with_one_tool)
+    planner.plan("hello", history=[])
+
+    sent_messages = mock_llm.chat.call_args[0][0]
+    assert len(sent_messages) == 2  # system + user (empty history adds nothing)

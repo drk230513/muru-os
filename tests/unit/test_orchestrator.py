@@ -169,3 +169,122 @@ def test_handle_passes_tool_args_to_registry(
     sent_messages = mock_llm.chat.call_args[0][0]
     user_msg = sent_messages[1]["content"]
     assert "ok_tool" in user_msg
+
+
+# ============================================
+# Confirmation provider integration (v0.3.0)
+# ============================================
+
+
+def test_handle_calls_confirmation_provider_for_tool_plans(
+    mock_llm: MagicMock, mock_planner: MagicMock, registry: ToolRegistry
+) -> None:
+    """Orchestrator should call confirmation_provider.confirm() before running a tool."""
+    from muru.policy.confirmation import ConfirmationOutcome, Decision
+
+    mock_planner.plan.return_value = Plan(needs_tool=True, tool_name="ok_tool", tool_args={})
+    mock_llm.chat.return_value = "summary"
+
+    mock_provider = MagicMock()
+    mock_provider.confirm.return_value = ConfirmationOutcome(decision=Decision.APPROVED)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        confirmation_provider=mock_provider,
+    )
+    orch.handle("do thing")
+
+    mock_provider.confirm.assert_called_once()
+    # Confirm the args include tool name and tier
+    call_kwargs = mock_provider.confirm.call_args[1]
+    assert call_kwargs["tool_name"] == "ok_tool"
+    # ok_tool was registered with default tier (READ_ONLY)
+    from muru.policy.risk import RiskTier
+
+    assert call_kwargs["risk_tier"] == RiskTier.READ_ONLY
+
+
+def test_handle_returns_decline_when_confirmation_rejected(
+    mock_llm: MagicMock, mock_planner: MagicMock, registry: ToolRegistry
+) -> None:
+    """If confirmation provider says REJECTED, tool must not run."""
+    from muru.policy.confirmation import ConfirmationOutcome, Decision
+
+    mock_planner.plan.return_value = Plan(needs_tool=True, tool_name="ok_tool", tool_args={})
+
+    mock_provider = MagicMock()
+    mock_provider.confirm.return_value = ConfirmationOutcome(
+        decision=Decision.REJECTED, reason="User said no"
+    )
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        confirmation_provider=mock_provider,
+    )
+    result = orch.handle("do thing")
+
+    assert result.tool_result is None
+    assert (
+        "will not" in result.final_response.lower()
+        or "won't" in result.final_response.lower()
+        or "not run" in result.final_response.lower()
+    )
+    # The LLM summarizer should NOT have been called
+    mock_llm.chat.assert_not_called()
+
+
+def test_handle_works_without_confirmation_provider(
+    mock_llm: MagicMock, mock_planner: MagicMock, registry: ToolRegistry
+) -> None:
+    """When confirmation_provider is None (default), tools auto-execute."""
+    mock_planner.plan.return_value = Plan(needs_tool=True, tool_name="ok_tool", tool_args={})
+    mock_llm.chat.return_value = "summary"
+
+    # No confirmation_provider argument - should auto-execute
+    orch = Orchestrator(llm=mock_llm, planner=mock_planner, registry=registry)
+    result = orch.handle("do thing")
+
+    assert result.tool_result is not None
+    assert result.tool_result["success"] is True
+
+
+# ============================================
+# Conversation history (v0.3.0)
+# ============================================
+
+
+def test_handle_passes_history_to_planner(
+    mock_llm: MagicMock, mock_planner: MagicMock, registry: ToolRegistry
+) -> None:
+    """When history is provided, it should reach the planner."""
+    mock_planner.plan.return_value = Plan(needs_tool=False, response="ok")
+
+    history = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+    ]
+
+    orch = Orchestrator(llm=mock_llm, planner=mock_planner, registry=registry)
+    orch.handle("follow-up question", history=history)
+
+    mock_planner.plan.assert_called_once()
+    # Check that history was passed as keyword arg
+    _, kwargs = mock_planner.plan.call_args
+    assert kwargs.get("history") == history
+
+
+def test_handle_works_without_history(
+    mock_llm: MagicMock, mock_planner: MagicMock, registry: ToolRegistry
+) -> None:
+    """When history is None or omitted, planner gets None."""
+    mock_planner.plan.return_value = Plan(needs_tool=False, response="ok")
+
+    orch = Orchestrator(llm=mock_llm, planner=mock_planner, registry=registry)
+    orch.handle("hello")
+
+    _, kwargs = mock_planner.plan.call_args
+    assert kwargs.get("history") is None

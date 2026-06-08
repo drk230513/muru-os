@@ -92,10 +92,7 @@ class Orchestrator:
             return OrchestratorResult(
                 intent=user_intent,
                 plan=None,
-                final_response=(
-                    "I couldn't figure out how to handle that. "
-                    "Could you rephrase?"
-                ),
+                final_response=("I couldn't figure out how to handle that. Could you rephrase?"),
                 error=f"PlannerError: {e}",
             )
 
@@ -120,9 +117,7 @@ class Orchestrator:
             # Planner picked a tool that's not registered. Shouldn't
             # happen because Planner already validates, but defend
             # against future changes.
-            log.warning(
-                "orchestrator_unknown_tool", tool=plan.tool_name, error=str(e)
-            )
+            log.warning("orchestrator_unknown_tool", tool=plan.tool_name, error=str(e))
             return OrchestratorResult(
                 intent=user_intent,
                 plan=plan,
@@ -152,8 +147,7 @@ class Orchestrator:
                     intent=user_intent,
                     plan=plan,
                     final_response=(
-                        "Okay, I will not run that. Let me know if "
-                        "you want to try something else."
+                        "Okay, I will not run that. Let me know if you want to try something else."
                     ),
                 )
             # MODIFIED handling is reserved for Phase 2 GUI. CLI
@@ -250,17 +244,13 @@ class Orchestrator:
                     "success": False,
                     "error": error_message,
                     "message": (
-                        f"The tool {tool_name!r} could not be called. "
-                        f"Reason: {error_message}"
+                        f"The tool {tool_name!r} could not be called. Reason: {error_message}"
                     ),
                 },
             )
         except Exception as e:
             log.warning("orchestrator_error_summarizer_failed", error=str(e))
-            return (
-                f"I tried to run the {tool_name} tool but it failed: "
-                f"{error_message}"
-            )
+            return f"I tried to run the {tool_name} tool but it failed: {error_message}"
 
 
 __all__ = ["Orchestrator"]
