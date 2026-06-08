@@ -144,10 +144,16 @@ def run_repl(
             log.info("repl_history_cleared")
             continue
 
-        # Hand off to the orchestrator with the current history
+        # Hand off to the orchestrator with the current history.
+        # Note: we deliberately do NOT wrap this in console.status() because
+        # the spinner monopolizes the terminal and interferes with
+        # console.input() inside the confirmation provider. With the spinner
+        # active, the prompt either gets eaten or input() returns cached
+        # terminal content, causing silent auto-approval. The log lines
+        # (and the confirmation panel itself for Tier 2+ tools) give the
+        # user enough visual feedback.
         try:
-            with console.status("[dim]Muru is thinking...[/dim]", spinner="dots"):
-                result = orchestrator.handle(user_input, history=list(history))
+            result = orchestrator.handle(user_input, history=list(history))
         except KeyboardInterrupt:
             console.print("\n[dim](interrupted)[/dim]")
             continue

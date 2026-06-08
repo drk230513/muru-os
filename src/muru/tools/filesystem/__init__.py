@@ -13,6 +13,7 @@ from muru.tools.filesystem.get_file_info import get_file_info_tool
 from muru.tools.filesystem.list_directory import list_directory_tool
 from muru.tools.filesystem.read_file import read_file_tool
 from muru.tools.filesystem.search_files import search_files_tool
+from muru.tools.filesystem.write_file import write_file_tool
 from muru.tools.registry import registry
 
 # Register every filesystem tool with the default registry.
@@ -22,6 +23,7 @@ _FILESYSTEM_TOOLS: list[Tool[Any, Any]] = [
     read_file_tool,
     get_file_info_tool,
     search_files_tool,
+    write_file_tool,
 ]
 
 for _tool in _FILESYSTEM_TOOLS:
@@ -34,4 +36,5 @@ __all__ = [
     "list_directory_tool",
     "read_file_tool",
     "search_files_tool",
+    "write_file_tool",
 ]
