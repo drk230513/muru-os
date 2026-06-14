@@ -32,7 +32,10 @@ from muru.policy.audit import (
     UndoEngine,
 )
 from muru.policy.confirmation.cli import CliConfirmationProvider
-from muru.tools import filesystem  # noqa: F401 - auto-registers filesystem tools
+from muru.tools import (
+    filesystem,  # noqa: F401 - auto-registers filesystem tools
+    shell,  # noqa: F401 - auto-registers shell tools
+)
 from muru.tools.registry import registry as default_registry
 from muru.utils.logging import get_logger
 
