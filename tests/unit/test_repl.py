@@ -7,6 +7,7 @@ into the Orchestrator, and accumulates conversation history.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,7 +59,7 @@ def test_repl_prints_welcome_banner_with_current_version(
     output = captured_console.file.getvalue()  # type: ignore[attr-defined]
 
     assert "Muru" in output
-    assert "v0.4.0" in output
+    assert "v0.5.0" in output
     assert "test-model" in output
 
 
@@ -488,3 +489,213 @@ def test_repl_does_invoke_tool_when_confirmation_provider_approves(
     assert invoked_count["n"] == 1, (
         f"Tool was invoked {invoked_count['n']} times, expected exactly 1 after user approval"
     )
+
+
+# ============================================
+# history + undo commands (v0.5.0)
+# ============================================
+
+
+def test_repl_history_command_with_no_audit_shows_friendly_message(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without audit_reader, history command falls back gracefully."""
+    monkeypatch.setattr(captured_console, "input", _scripted_input("history", "exit"))
+
+    with patch("muru.ui.cli.repl.Orchestrator") as MockOrchestrator:
+        run_repl(mock_client, console=captured_console)
+
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "No audit history" in output or "not available" in output
+    # Orchestrator never called
+    MockOrchestrator.return_value.handle.assert_not_called()
+
+
+def test_repl_history_command_shows_recent_actions(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """With a real audit reader containing entries, history shows them."""
+    from muru.policy.audit import AuditEntry, AuditReader, AuditWriter
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+    writer.append(
+        AuditEntry(
+            intent="list my files",
+            tool_name="list_directory",
+            tool_args={"path": "~"},
+            tool_result={"success": True},
+            final_response="Here are your files.",
+        )
+    )
+
+    monkeypatch.setattr(captured_console, "input", _scripted_input("history", "exit"))
+
+    with patch("muru.ui.cli.repl.Orchestrator"):
+        run_repl(
+            mock_client,
+            console=captured_console,
+            audit_reader=AuditReader(audit_path),
+        )
+
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "Recent actions" in output
+    assert "list_directory" in output
+
+
+def test_repl_undo_with_nothing_to_undo_shows_message(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """undo with empty audit gives a friendly message."""
+    from muru.policy.audit import AuditReader, AuditWriter, UndoEngine
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+    reader = AuditReader(audit_path)
+    engine = UndoEngine(writer)
+
+    monkeypatch.setattr(captured_console, "input", _scripted_input("undo", "exit"))
+
+    with patch("muru.ui.cli.repl.Orchestrator"):
+        run_repl(
+            mock_client,
+            console=captured_console,
+            audit_writer=writer,
+            audit_reader=reader,
+            undo_engine=engine,
+        )
+
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "Nothing to undo" in output
+
+
+def test_repl_undo_command_can_be_cancelled(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """User can type \'n\' at the undo confirmation prompt."""
+    from muru.policy.audit import AuditEntry, AuditReader, AuditWriter, UndoEngine
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+    target_file = tmp_path / "created.txt"
+    target_file.write_text("hello")
+    writer.append(
+        AuditEntry(
+            intent="create file",
+            tool_name="write_file",
+            tool_args={"path": str(target_file), "content": "hello"},
+            tool_result={
+                "success": True,
+                "path": str(target_file),
+                "created": True,
+                "size_bytes": 5,
+            },
+            final_response="Created the file.",
+        )
+    )
+
+    reader = AuditReader(audit_path)
+    engine = UndoEngine(writer)
+
+    monkeypatch.setattr(
+        captured_console,
+        "input",
+        _scripted_input("undo", "n", "exit"),
+    )
+
+    with patch("muru.ui.cli.repl.Orchestrator"):
+        run_repl(
+            mock_client,
+            console=captured_console,
+            audit_writer=writer,
+            audit_reader=reader,
+            undo_engine=engine,
+        )
+
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "Cancelled" in output
+    # File should still exist (cancelled)
+    assert target_file.exists()
+
+
+def test_repl_undo_command_executes_when_confirmed(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Typing \'y\' actually reverses the most recent action."""
+    from muru.policy.audit import AuditEntry, AuditReader, AuditWriter, UndoEngine
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+    target_file = tmp_path / "to_undo.txt"
+    target_file.write_text("hello")
+    writer.append(
+        AuditEntry(
+            intent="create file",
+            tool_name="write_file",
+            tool_args={"path": str(target_file), "content": "hello"},
+            tool_result={
+                "success": True,
+                "path": str(target_file),
+                "created": True,
+                "size_bytes": 5,
+            },
+            final_response="Created the file.",
+        )
+    )
+
+    reader = AuditReader(audit_path)
+    engine = UndoEngine(writer)
+
+    monkeypatch.setattr(
+        captured_console,
+        "input",
+        _scripted_input("undo", "y", "exit"),
+    )
+
+    # Patch safe_resolve so the test path resolves correctly without
+    # requiring a real sandbox layout
+    with (
+        patch("muru.ui.cli.repl.Orchestrator"),
+        patch("muru.policy.audit.undo.safe_resolve", return_value=target_file),
+    ):
+        run_repl(
+            mock_client,
+            console=captured_console,
+            audit_writer=writer,
+            audit_reader=reader,
+            undo_engine=engine,
+        )
+
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "Undone" in output or "Undo successful" in output
+    # File should be deleted by the undo
+    assert not target_file.exists()
+
+
+def test_repl_undo_without_audit_components_fails_gracefully(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If audit/undo components are None, undo command shows a message."""
+    monkeypatch.setattr(captured_console, "input", _scripted_input("undo", "exit"))
+
+    with patch("muru.ui.cli.repl.Orchestrator"):
+        run_repl(mock_client, console=captured_console)
+
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "not available" in output or "not configured" in output

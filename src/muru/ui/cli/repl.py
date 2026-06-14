@@ -15,13 +15,22 @@ All existing v0.2.0 commands (help, exit, quit) continue to work.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
 
 from muru.llm.client import ChatMessage, LLMClient
 from muru.orchestrator.orchestrator import Orchestrator
 from muru.planner.planner import Planner
+from muru.policy.audit import (
+    DEFAULT_AUDIT_FILENAME,
+    AuditReader,
+    AuditWriter,
+    UndoEngine,
+)
 from muru.policy.confirmation.cli import CliConfirmationProvider
 from muru.tools import filesystem  # noqa: F401 - auto-registers filesystem tools
 from muru.tools.registry import registry as default_registry
@@ -32,12 +41,14 @@ log = get_logger(__name__)
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 HELP_COMMANDS = {"help", "/help", "?"}
 CLEAR_COMMANDS = {"clear", "/clear", "reset", "/reset"}
+HISTORY_COMMANDS = {"history", "/history", "actions", "/actions"}
+UNDO_COMMANDS = {"undo", "/undo"}
 
 
 def _print_welcome(console: Console, model: str, tool_count: int) -> None:
     """Print the startup banner."""
     welcome = Panel.fit(
-        "[bold cyan]Muru[/bold cyan] [dim]v0.4.0 - filesystem write tools[/dim]\n\n"
+        "[bold cyan]Muru[/bold cyan] [dim]v0.5.0 - audit log + undo[/dim]\n\n"
         f"Model: [yellow]{model}[/yellow]\n"
         f"Tools loaded: [green]{tool_count}[/green]\n"
         "Type [bold]help[/bold] for commands, [bold]exit[/bold] to quit.\n"
@@ -87,15 +98,132 @@ def _read_input(console: Console) -> str:
         return ""
 
 
+def _handle_history(console: Console, audit_reader: AuditReader | None) -> None:
+    """Show the last 10 audited actions in a table."""
+    if audit_reader is None or not audit_reader.exists():
+        console.print("[dim]No audit history yet. Run a tool first, then check back.[/dim]")
+        return
+
+    entries = audit_reader.recent(n=10)
+    if not entries:
+        console.print("[dim]No actions in the audit log yet.[/dim]")
+        return
+
+    table = Table(title="Recent actions (newest first)", border_style="cyan")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("When", style="cyan")
+    table.add_column("Tool", style="bold")
+    table.add_column("Status")
+    table.add_column("Intent", overflow="fold")
+
+    for i, entry in enumerate(entries, start=1):
+        when = entry.timestamp.strftime("%H:%M:%S")
+        if entry.error is not None:
+            status = "[red]failed[/red]"
+        elif entry.undone:
+            status = "[yellow]undone[/yellow]"
+        else:
+            status = "[green]ok[/green]"
+        table.add_row(
+            str(i),
+            when,
+            entry.tool_name,
+            status,
+            entry.intent[:60],
+        )
+    console.print(table)
+
+
+def _handle_undo(
+    console: Console,
+    audit_reader: AuditReader | None,
+    undo_engine: UndoEngine | None,
+    audit_writer: AuditWriter | None,
+) -> None:
+    """Undo the most recent successful action that has not been undone."""
+    if audit_reader is None or undo_engine is None or audit_writer is None:
+        console.print(
+            "[dim]Undo is not available (audit system not configured for this session).[/dim]"
+        )
+        return
+
+    target = audit_reader.last_undoable()
+    if target is None:
+        console.print("[dim]Nothing to undo (no successful, un-undone actions in history).[/dim]")
+        return
+
+    when = target.timestamp.strftime("%H:%M:%S")
+    console.print(
+        Panel(
+            f"[bold]Will undo:[/bold] [cyan]{target.tool_name}[/cyan] "
+            f"at [dim]{when}[/dim]\n"
+            f"[bold]Original intent:[/bold] [dim]{target.intent}[/dim]\n"
+            f"[bold]Original response:[/bold] [dim]{target.final_response[:200]}[/dim]",
+            title="Undo confirmation",
+            border_style="yellow",
+        )
+    )
+
+    try:
+        response = (
+            console.input("[bold]Proceed with undo?[/bold] [dim](y/n)[/dim] ").strip().lower()
+        )
+    except (EOFError, KeyboardInterrupt):
+        console.print("[dim](cancelled)[/dim]")
+        return
+
+    if response not in {"y", "yes"}:
+        console.print("[dim]Cancelled. Nothing was undone.[/dim]")
+        return
+
+    outcome = undo_engine.undo(target)
+    if not outcome.success:
+        console.print(
+            Panel(
+                f"[red]Could not undo:[/red] {outcome.message}",
+                title="Undo failed",
+                border_style="red",
+            )
+        )
+        return
+
+    # On success: append the undo audit entry, then mark the original undone.
+    if outcome.undo_entry is not None:
+        try:
+            audit_writer.append(outcome.undo_entry)
+            audit_writer.mark_undone(
+                event_id=str(target.event_id),
+                undone_by_event_id=str(outcome.undo_entry.event_id),
+            )
+        except Exception as e:
+            log.warning("undo_audit_failed", error=str(e))
+
+    console.print(
+        Panel(
+            f"[green]Undone.[/green]\n{outcome.message}",
+            title="Undo successful",
+            border_style="green",
+        )
+    )
+
+
 def run_repl(
     client: LLMClient,
     console: Console | None = None,
+    audit_writer: AuditWriter | None = None,
+    audit_reader: AuditReader | None = None,
+    undo_engine: UndoEngine | None = None,
 ) -> None:
     """Run the interactive REPL until the user exits.
 
     Args:
         client: The LLMClient to use for planning and summarization.
         console: Optional Rich Console. Pass a custom one for testing.
+        audit_writer: Optional AuditWriter; if provided, tool invocations
+            are logged. The REPL `history` and `undo` commands require
+            audit_writer + audit_reader + undo_engine to all be present.
+        audit_reader: Optional AuditReader for history/undo commands.
+        undo_engine: Optional UndoEngine for the undo command.
     """
     console = console or Console()
 
@@ -107,6 +235,7 @@ def run_repl(
         planner=planner,
         registry=default_registry,
         confirmation_provider=confirmation_provider,
+        audit_writer=audit_writer,
     )
 
     model = client._resolve_model(None)
@@ -142,6 +271,12 @@ def run_repl(
             history.clear()
             console.print("[dim]Conversation history cleared.[/dim]")
             log.info("repl_history_cleared")
+            continue
+        if lowered in HISTORY_COMMANDS:
+            _handle_history(console, audit_reader)
+            continue
+        if lowered in UNDO_COMMANDS:
+            _handle_undo(console, audit_reader, undo_engine, audit_writer)
             continue
 
         # Hand off to the orchestrator with the current history.
@@ -228,8 +363,22 @@ def main_repl_loop() -> int:
         )
         return 1
 
+    # Build audit components rooted at the configured data_dir
+    data_dir = Path(config.paths.data_dir).expanduser()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = data_dir / DEFAULT_AUDIT_FILENAME
+    audit_writer = AuditWriter(audit_path)
+    audit_reader = AuditReader(audit_path)
+    undo_engine = UndoEngine(audit_writer)
+
     try:
-        run_repl(client, console=console)
+        run_repl(
+            client,
+            console=console,
+            audit_writer=audit_writer,
+            audit_reader=audit_reader,
+            undo_engine=undo_engine,
+        )
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted. Goodbye.[/dim]")
         return 0

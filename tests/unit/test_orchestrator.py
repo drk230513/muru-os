@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -288,3 +289,150 @@ def test_handle_works_without_history(
 
     _, kwargs = mock_planner.plan.call_args
     assert kwargs.get("history") is None
+
+
+# ============================================
+# Audit writer integration (v0.5.0)
+# ============================================
+
+
+def test_orchestrator_writes_audit_entry_on_successful_tool_run(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+    registry: ToolRegistry,
+    tmp_path: Path,
+) -> None:
+    """A successful tool invocation must append an AuditEntry."""
+    from muru.policy.audit import AuditReader, AuditWriter
+
+    mock_planner.plan.return_value = Plan(
+        needs_tool=True, tool_name="ok_tool", tool_args={"k": "v"}
+    )
+    mock_llm.chat.return_value = "summary text"
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        audit_writer=writer,
+    )
+    orch.handle("do thing")
+
+    reader = AuditReader(audit_path)
+    entries = reader.all_entries()
+    assert len(entries) == 1
+    assert entries[0].tool_name == "ok_tool"
+    assert entries[0].intent == "do thing"
+    assert entries[0].error is None
+    assert entries[0].tool_result.get("success") is True
+
+
+def test_orchestrator_writes_audit_entry_on_tool_error(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+    registry: ToolRegistry,
+    tmp_path: Path,
+) -> None:
+    """ToolError outcomes are also auditable."""
+    from muru.policy.audit import AuditReader, AuditWriter
+    from muru.tools.base import ToolExecutionError
+
+    mock_planner.plan.return_value = Plan(needs_tool=True, tool_name="ok_tool", tool_args={})
+    # Make the registry tool blow up
+    registry.get("ok_tool")._implementation = (  # type: ignore[assignment]
+        lambda args: (_ for _ in ()).throw(ToolExecutionError("simulated tool crash"))
+    )
+    mock_llm.chat.return_value = "I am sorry, the tool failed."
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        audit_writer=writer,
+    )
+    orch.handle("do thing that fails")
+
+    reader = AuditReader(audit_path)
+    entries = reader.all_entries()
+    assert len(entries) == 1
+    assert entries[0].tool_name == "ok_tool"
+    assert entries[0].error is not None
+    assert "ToolError" in entries[0].error
+
+
+def test_orchestrator_does_not_audit_conversational_turns(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+    registry: ToolRegistry,
+    tmp_path: Path,
+) -> None:
+    """No tool ran -> no audit entry. Pure conversation isn\'t undoable."""
+    from muru.policy.audit import AuditReader, AuditWriter
+
+    mock_planner.plan.return_value = Plan(needs_tool=False, response="hi")
+
+    audit_path = tmp_path / "audit.jsonl"
+    writer = AuditWriter(audit_path)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        audit_writer=writer,
+    )
+    orch.handle("hi there")
+
+    reader = AuditReader(audit_path)
+    # File may or may not exist - either way, no entries
+    assert reader.all_entries() == []
+
+
+def test_orchestrator_audit_failure_does_not_break_flow(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+    registry: ToolRegistry,
+) -> None:
+    """If the audit writer throws, the user still gets their response."""
+    mock_planner.plan.return_value = Plan(needs_tool=True, tool_name="ok_tool", tool_args={})
+    mock_llm.chat.return_value = "tool result"
+
+    # A "writer" that always raises
+    broken_writer = MagicMock()
+    broken_writer.append.side_effect = OSError("simulated audit disk failure")
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        audit_writer=broken_writer,
+    )
+    result = orch.handle("do thing")
+
+    # User still gets a valid result
+    assert result.tool_result is not None
+    assert result.tool_result.get("success") is True
+    # And the writer was attempted
+    broken_writer.append.assert_called_once()
+
+
+def test_orchestrator_works_without_audit_writer(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+    registry: ToolRegistry,
+) -> None:
+    """Backward-compat: no audit_writer means no audit (v0.4.0 behavior)."""
+    mock_planner.plan.return_value = Plan(needs_tool=True, tool_name="ok_tool", tool_args={})
+    mock_llm.chat.return_value = "ok"
+
+    # No audit_writer kwarg - should not crash
+    orch = Orchestrator(llm=mock_llm, planner=mock_planner, registry=registry)
+    result = orch.handle("do thing")
+
+    assert result.tool_result is not None
+    assert result.tool_result.get("success") is True

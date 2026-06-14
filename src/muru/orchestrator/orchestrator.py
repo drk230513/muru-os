@@ -24,12 +24,14 @@ from muru.llm.client import ChatMessage, LLMClient
 from muru.orchestrator.result import OrchestratorResult
 from muru.orchestrator.summarizer import summarize_tool_result
 from muru.planner.planner import Planner, PlannerError
+from muru.policy.audit import AuditEntry
 from muru.policy.confirmation import Decision
 from muru.tools.base import ToolError
 from muru.tools.registry import ToolRegistry
 from muru.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from muru.policy.audit import AuditWriter
     from muru.policy.confirmation import ConfirmationProvider
 
 log = get_logger(__name__)
@@ -44,6 +46,7 @@ class Orchestrator:
         planner: Planner,
         registry: ToolRegistry,
         confirmation_provider: ConfirmationProvider | None = None,
+        audit_writer: AuditWriter | None = None,
     ) -> None:
         """Construct an Orchestrator.
 
@@ -54,11 +57,16 @@ class Orchestrator:
             confirmation_provider: Optional ConfirmationProvider that
                 decides whether to execute tool plans. If None, all
                 plans auto-approve (matches v0.2.0 behavior).
+            audit_writer: Optional AuditWriter. If provided, every tool
+                invocation (success or failure) is appended to the audit
+                log. If None, no audit log is written (matches v0.4.0
+                behavior).
         """
         self._llm = llm
         self._planner = planner
         self._registry = registry
         self._confirmation_provider = confirmation_provider
+        self._audit_writer = audit_writer
 
     def handle(
         self,
@@ -185,6 +193,14 @@ class Orchestrator:
             error_summary = self._summarize_tool_error(
                 user_intent, plan.tool_name, plan.tool_args or {}, str(e)
             )
+            self._maybe_audit(
+                intent=user_intent,
+                tool_name=plan.tool_name,
+                tool_args=plan.tool_args or {},
+                tool_result={"success": False, "error": str(e)},
+                final_response=error_summary,
+                error=f"ToolError: {e}",
+            )
             return OrchestratorResult(
                 intent=user_intent,
                 plan=plan,
@@ -210,6 +226,14 @@ class Orchestrator:
                 tool_result_dict.get("message")
                 or "The tool completed, but I could not summarize the result."
             )
+            self._maybe_audit(
+                intent=user_intent,
+                tool_name=plan.tool_name,
+                tool_args=plan.tool_args or {},
+                tool_result=tool_result_dict,
+                final_response=fallback,
+                error=f"SummarizerError: {e}",
+            )
             return OrchestratorResult(
                 intent=user_intent,
                 plan=plan,
@@ -219,12 +243,55 @@ class Orchestrator:
             )
 
         log.info("orchestrator_complete", tool=plan.tool_name)
+        self._maybe_audit(
+            intent=user_intent,
+            tool_name=plan.tool_name,
+            tool_args=plan.tool_args or {},
+            tool_result=tool_result_dict,
+            final_response=summary,
+            error=None,
+        )
         return OrchestratorResult(
             intent=user_intent,
             plan=plan,
             tool_result=tool_result_dict,
             final_response=summary,
         )
+
+    def _maybe_audit(
+        self,
+        *,
+        intent: str,
+        tool_name: str,
+        tool_args: dict[str, object],
+        tool_result: dict[str, object],
+        final_response: str,
+        error: str | None,
+    ) -> None:
+        """Append an audit entry if a writer is configured.
+
+        Audit failures are logged but never propagated - the user-facing
+        flow must continue even if the disk is full or the audit file
+        is locked.
+        """
+        if self._audit_writer is None:
+            return
+        try:
+            entry = AuditEntry(
+                intent=intent,
+                tool_name=tool_name,
+                tool_args=dict(tool_args),
+                tool_result=dict(tool_result),
+                final_response=final_response,
+                error=error,
+            )
+            self._audit_writer.append(entry)
+        except Exception as e:
+            log.warning(
+                "orchestrator_audit_failed",
+                tool=tool_name,
+                error=str(e),
+            )
 
     def _summarize_tool_error(
         self,
