@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from muru.orchestrator.orchestrator import Orchestrator
 from muru.planner.plan import Plan
 from muru.planner.planner import PlannerError
+from muru.policy.risk import RiskTier
 from muru.tools.base import Tool, ToolResult
 from muru.tools.registry import ToolRegistry
 
@@ -436,3 +437,165 @@ def test_orchestrator_works_without_audit_writer(
 
     assert result.tool_result is not None
     assert result.tool_result.get("success") is True
+
+
+# ============================================
+# validate() pre-execution hook (v0.6.1)
+# ============================================
+
+
+def test_orchestrator_calls_validate_before_confirmation(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+    registry: ToolRegistry,
+) -> None:
+    """If a tool\'s validator refuses, confirmation MUST NOT fire.
+
+    This is the architectural fix for the v0.6.0 \"rm reaches
+    confirmation\" bug. The validator runs first; refusal short-circuits
+    before any confirmation prompt is shown to the user.
+    """
+    # Register a tool with a validator that always refuses
+    from pydantic import BaseModel
+
+    from muru.policy.confirmation import (
+        ConfirmationOutcome,
+        Decision,
+    )
+
+    class FakeArgs(BaseModel):
+        x: int = 0
+
+    class FakeResult(ToolResult):
+        pass
+
+    refusing_tool = Tool(
+        name="refuses_everything",
+        description="A tool that always refuses to run.",
+        args_model=FakeArgs,
+        result_model=FakeResult,
+        implementation=lambda args: FakeResult(success=True),
+        risk_tier=RiskTier.HIGH_RISK,
+        validator=lambda args: "computed refusal reason",
+    )
+    registry.register(refusing_tool)
+
+    mock_planner.plan.return_value = Plan(
+        needs_tool=True, tool_name="refuses_everything", tool_args={"x": 1}
+    )
+
+    # Confirmation provider that records whether it was called
+    provider_calls: list[str] = []
+
+    class RecordingProvider:
+        def confirm(self, **kwargs: object) -> ConfirmationOutcome:
+            provider_calls.append("called")
+            return ConfirmationOutcome(decision=Decision.APPROVED)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=registry,
+        confirmation_provider=RecordingProvider(),
+    )
+    result = orch.handle("trigger the refusal")
+
+    # The validator's refusal short-circuits the flow
+    assert result.error is not None
+    assert "ValidateRefused" in result.error
+    assert "computed refusal reason" in result.final_response
+    # The confirmation provider must NEVER have been called
+    assert provider_calls == [], (
+        "Confirmation provider was invoked despite validator refusal. "
+        "This is the v0.6.0 bug regressing."
+    )
+
+
+def test_run_shell_disallowed_command_does_not_reach_confirmation(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+) -> None:
+    """Real run_shell + rm: validator must refuse before confirmation.
+
+    Reproduces the exact case the user hit during v0.6.0 manual
+    testing - planner picks run_shell with command=\"rm\". The
+    confirmation panel must NOT render.
+    """
+    from muru.policy.confirmation import (
+        ConfirmationOutcome,
+        Decision,
+    )
+    from muru.tools import shell  # noqa: F401 - auto-registers
+    from muru.tools.registry import registry as default_registry
+
+    mock_planner.plan.return_value = Plan(
+        needs_tool=True,
+        tool_name="run_shell",
+        tool_args={"command": "rm", "args": ["-rf", "~/"]},
+    )
+
+    provider_calls: list[str] = []
+
+    class RecordingProvider:
+        def confirm(self, **kwargs: object) -> ConfirmationOutcome:
+            provider_calls.append("called")
+            return ConfirmationOutcome(decision=Decision.APPROVED)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=default_registry,
+        confirmation_provider=RecordingProvider(),
+    )
+    result = orch.handle("delete with rm")
+
+    assert result.error is not None
+    assert "ValidateRefused" in result.error
+    assert "allowlist" in result.final_response.lower()
+    assert provider_calls == [], (
+        "v0.6.1 regression: rm reached the confirmation prompt. "
+        "The validator hook should have refused first."
+    )
+
+
+def test_run_shell_allowed_command_still_reaches_confirmation(
+    mock_llm: MagicMock,
+    mock_planner: MagicMock,
+) -> None:
+    """Sanity check: allowlisted commands STILL get the confirmation prompt.
+
+    The v0.6.1 fix must not break legitimate paths.
+    """
+    from muru.policy.confirmation import (
+        ConfirmationOutcome,
+        Decision,
+    )
+    from muru.tools import shell  # noqa: F401
+    from muru.tools.registry import registry as default_registry
+
+    mock_planner.plan.return_value = Plan(
+        needs_tool=True,
+        tool_name="run_shell",
+        tool_args={"command": "df", "args": ["-h"]},
+    )
+    mock_llm.chat.return_value = "Your disk usage looks fine."
+
+    provider_calls: list[str] = []
+
+    class RecordingProvider:
+        def confirm(self, **kwargs: object) -> ConfirmationOutcome:
+            provider_calls.append("called")
+            return ConfirmationOutcome(decision=Decision.REJECTED)
+
+    orch = Orchestrator(
+        llm=mock_llm,
+        planner=mock_planner,
+        registry=default_registry,
+        confirmation_provider=RecordingProvider(),
+    )
+    orch.handle("disk usage")
+
+    assert provider_calls == ["called"], (
+        "Confirmation provider was bypassed for an allowlisted command. "
+        "This breaks the safety architecture."
+    )

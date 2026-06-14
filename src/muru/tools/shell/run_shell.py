@@ -259,6 +259,18 @@ def _decode_with_limit(data: bytes) -> tuple[str, bool]:
     )
 
 
+def _validate_run_shell(args: RunShellArgs) -> str | None:
+    """Pre-execution validator: refuse non-allowlisted commands BEFORE
+    the orchestrator fires the confirmation prompt. Fixes the v0.6.0
+    UX bug where rm/sudo/etc. would reach the confirmation panel
+    before being refused at execution time.
+    """
+    ok, reason = _is_allowed(args.command, args.args)
+    if ok:
+        return None
+    return reason
+
+
 run_shell_tool: Tool[RunShellArgs, RunShellResult] = Tool(
     name="run_shell",
     description=(
@@ -272,6 +284,7 @@ run_shell_tool: Tool[RunShellArgs, RunShellResult] = Tool(
     result_model=RunShellResult,
     implementation=_run_shell_impl,
     risk_tier=RiskTier.MEDIUM_RISK,
+    validator=_validate_run_shell,
 )
 
 

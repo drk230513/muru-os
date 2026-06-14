@@ -79,9 +79,7 @@ def configure_logging(
     level_upper = level.upper()
     valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
     if level_upper not in valid_levels:
-        raise ValueError(
-            f"Invalid log level: {level!r}. Must be one of {sorted(valid_levels)}."
-        )
+        raise ValueError(f"Invalid log level: {level!r}. Must be one of {sorted(valid_levels)}.")
 
     # Configure stdlib logging (structlog uses it under the hood)
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
@@ -104,13 +102,13 @@ def configure_logging(
     # Each processor receives an event dict and returns a (possibly modified) one.
     # Order matters — they run top to bottom.
     shared_processors: list[Processor] = [
-        structlog.contextvars.merge_contextvars,        # Merge context from contextvars
-        structlog.stdlib.add_logger_name,               # Add logger name (e.g., "muru.llm")
-        structlog.stdlib.add_log_level,                 # Add level (info, error, etc.)
+        structlog.contextvars.merge_contextvars,  # Merge context from contextvars
+        structlog.stdlib.add_logger_name,  # Add logger name (e.g., "muru.llm")
+        structlog.stdlib.add_log_level,  # Add level (info, error, etc.)
         structlog.processors.TimeStamper(fmt="iso", utc=True),  # ISO timestamp in UTC
-        structlog.processors.StackInfoRenderer(),       # Add stack info if requested
-        structlog.processors.format_exc_info,           # Format exception info
-        structlog.processors.UnicodeDecoder(),          # Decode bytes to unicode
+        structlog.processors.StackInfoRenderer(),  # Add stack info if requested
+        structlog.processors.format_exc_info,  # Format exception info
+        structlog.processors.UnicodeDecoder(),  # Decode bytes to unicode
     ]
 
     # Final renderer differs by mode
@@ -121,9 +119,7 @@ def configure_logging(
 
     structlog.configure(
         processors=[*shared_processors, renderer],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, level_upper)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level_upper)),
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,

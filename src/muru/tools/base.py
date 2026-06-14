@@ -104,6 +104,7 @@ class Tool(Generic[ArgsT, ResultT]):
         result_model: type[ResultT],
         implementation: Callable[[ArgsT], ResultT],
         risk_tier: RiskTier = RiskTier.READ_ONLY,
+        validator: Callable[[ArgsT], str | None] | None = None,
     ) -> None:
         if not name or not name.replace("_", "").isalnum():
             raise ValueError(f"Tool name must be non-empty alphanumeric/underscore, got {name!r}")
@@ -116,6 +117,7 @@ class Tool(Generic[ArgsT, ResultT]):
         self.result_model = result_model
         self.risk_tier = risk_tier
         self._implementation = implementation
+        self._validator = validator
 
     def invoke(self, raw_args: dict[str, Any]) -> ResultT:
         """Validate raw_args, run the tool, return the result.
@@ -150,6 +152,33 @@ class Tool(Generic[ArgsT, ResultT]):
 
         log.debug("tool_completed", tool=self.name)
         return result
+
+    def validate(self, raw_args: dict[str, Any]) -> str | None:
+        """Pre-execution validation hook.
+
+        Called by the orchestrator AFTER args parsing but BEFORE the
+        confirmation provider. If this returns a non-None string, the
+        orchestrator treats it as a refusal and returns an error result
+        without ever firing the confirmation prompt.
+
+        Returns:
+            None if the tool is willing to proceed (subject to user
+            confirmation per its risk tier). A string explaining the
+            refusal otherwise.
+
+        Default: no extra validation beyond args_model. Tools that need
+        to refuse some arg combinations entirely (e.g., run_shell with
+        a non-allowlisted command) pass a `validator` callable to the
+        Tool constructor.
+        """
+        if self._validator is None:
+            return None
+        try:
+            args = self.args_model(**raw_args)
+        except ValidationError:
+            # Let invoke() emit the canonical args-validation error.
+            return None
+        return self._validator(args)
 
     def schema(self) -> dict[str, Any]:
         """Return a JSON-schema-style description of this tool for the LLM.

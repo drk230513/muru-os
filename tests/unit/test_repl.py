@@ -59,7 +59,7 @@ def test_repl_prints_welcome_banner_with_current_version(
     output = captured_console.file.getvalue()  # type: ignore[attr-defined]
 
     assert "Muru" in output
-    assert "v0.5.0" in output
+    assert "v0.6.1" in output
     assert "test-model" in output
 
 

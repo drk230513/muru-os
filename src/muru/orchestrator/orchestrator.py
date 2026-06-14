@@ -136,6 +136,24 @@ class Orchestrator:
                 error=f"Unknown tool: {plan.tool_name}",
             )
 
+        # Pre-execution validation (v0.6.1)
+        # Tools can refuse to proceed BEFORE the confirmation prompt fires.
+        # This is how run_shell refuses non-allowlisted commands without
+        # leaking them into the confirmation panel.
+        validation_refusal = tool.validate(plan.tool_args or {})
+        if validation_refusal is not None:
+            log.info(
+                "orchestrator_validate_refused",
+                tool=plan.tool_name,
+                reason=validation_refusal,
+            )
+            return OrchestratorResult(
+                intent=user_intent,
+                plan=plan,
+                final_response=f"I cannot run that: {validation_refusal}",
+                error=f"ValidateRefused: {validation_refusal}",
+            )
+
         # Confirmation gate
         if self._confirmation_provider is not None:
             outcome = self._confirmation_provider.confirm(

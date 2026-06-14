@@ -25,7 +25,7 @@ llm:
   # deep    — Used for complex reasoning, multi-step planning, code analysis.
   #           Optimize for quality, accept slowness.
   fast: "llama3.1:8b"
-  balanced: "llama3.1:8b"
+  balanced: "qwen2.5:32b"
   deep: "deepseek-r1:70b"
 
   # Which profile to use when code doesn't specify one.
