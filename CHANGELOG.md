@@ -7,85 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(Nothing yet — Phase 1 v0.3.0 work begins next.)
+(Nothing yet - v0.5.0 work begins next: audit log + undo.)
+
+## [0.4.0] - 2026-06-14
+
+The write release. Muru can now create, modify, move, and delete files
+with tier-appropriate confirmation prompts.
+
+### Added
+- **`write_file` tool (Tier 3)**: atomic writes via temp+rename, sandboxed
+  to user home, captures previous content for v0.5.0 undo
+- **`move_file` tool (Tier 3)**: refuses to overwrite existing destination,
+  uses shutil.move() for cross-filesystem moves
+- **`delete_file` tool (Tier 4)**: red-panel UX with 5s cooldown, must type
+  the tool name to confirm. Captures deleted content for v0.5.0 undo
+- **Integration tests** in test_repl.py that verify confirmation gating
+  end-to-end (catches the spinner bug regression and similar)
+- Design doc at `docs/v0.4-write-tools-design.md` documenting tier
+  choices, atomic write strategy, undo metadata schema
+
+### Fixed
+- **Security bug from v0.3.x**: REPL's status spinner was monopolizing
+  the terminal, causing console.input() in the confirmation provider to
+  return cached content. The bug auto-approved Tier 2+ confirmations
+  without ever showing a prompt. Latent in v0.3.x because all tools
+  were Tier 0. Caught by manual testing during v0.4.0-alpha1 work.
+- REPL no longer wraps orchestrator.handle() in console.status(); the
+  confirmation panel itself provides visual feedback that work is
+  happening
+
+### Safety guarantees
+- All write tools sandboxed via `safe_resolve()` — refuse paths outside
+  user home directory
+- `write_file` refuses to clobber directories or non-regular files
+- `move_file` refuses to silently overwrite — user must explicitly delete
+  the destination first (its own Tier 4 confirmation)
+- `delete_file` refuses directories (different UX needed, deferred), and
+  for symlinks deletes the link, never the target
+
+### Notes
+- Undo metadata is captured in tool results (previous_content,
+  deleted_content) but undo itself lands in v0.5.0
+- Content capture is capped at 10MB per file. Larger files complete
+  but are noted as not undoable from the result alone
+- 247 tests passing (was 221 in v0.4.0-alpha1)
+
+## [0.4.0-alpha1] - 2026-06-08
+
+Pre-release: first write tool + critical security fix.
+
+### Added
+- `write_file` tool (Tier 3) with atomic writes
+- Design doc for v0.4.0 write tools
+
+### Fixed
+- Latent v0.3.x spinner-bypasses-confirmation bug (see v0.4.0 notes)
+
+## [0.3.1] - 2026-06-08
+
+Planner prompt polish patch.
+
+### Fixed
+- Planner now sets recursive=true for "files in my X folder" queries
+- Planner uses "~/" with slash instead of "~name" for home paths
+- Planner uses conversation history before re-running tools
+
+## [0.3.0] - 2026-06-08
+
+Confirmation and conversation release.
+
+### Added
+- Risk tier system (Tier 0-4) for all tools
+- ConfirmationProvider Protocol + CLI implementation (Rich panels)
+- Tier-aware confirmation UX (auto, y/n, type-yes, type-name + cooldown)
+- Multi-turn conversation history in REPL
+- `clear` command to reset history mid-session
+
+### Changed
+- Quiet logs by default (set MURU_LOGGING_LEVEL=INFO to debug)
+- REPL passes list(history) (defensive copy) to orchestrator
 
 ## [0.2.0] - 2026-05-04
 
-Read-only tool release. Muru can now look at the user's filesystem and
-answer real questions about it. The LLM autonomously decides which tool
-to call and how to summarize the result.
+Read-only tool release.
 
 ### Added
-- **Tool registry** (`muru.tools.registry`) — central catalog of capabilities.
-  Tools register themselves at import time. Provides JSON schemas for
-  the LLM to consume.
-- **Tool wrapper** (`muru.tools.base.Tool`) — generic base for all tools.
-  Pydantic-validated args, Pydantic-validated results, custom exception
-  hierarchy.
-- **Path safety** (`muru.tools.filesystem._safety`) — every filesystem
-  tool resolves user paths through `safe_resolve()`, which expands `~`,
-  resolves symlinks, and rejects anything outside the user's home directory.
-  Defends against path traversal.
-- **`list_directory` tool** — list files and folders with metadata
-  (name, type, size, modified time). Glob filtering and optional recursion.
-- **`read_file` tool** — read text file contents with size cap and
-  configurable encoding.
-- **`get_file_info` tool** — detailed metadata for a single file or
-  directory: type, size, times, POSIX permissions, MIME type, optional
-  SHA-256 hash.
-- **`search_files` tool** — find files by name pattern (glob) and/or
-  content pattern (regex). Skips noise dirs (.git, node_modules, etc).
-- **Planner** (`muru.planner`) — LLM-driven intent → Plan converter.
-  Robust JSON parsing handles markdown code blocks and surrounding
-  chatter. Retries with corrective feedback on parse failure.
-- **Orchestrator** (`muru.orchestrator`) — wires planner + tool registry
-  + summarizer into an end-to-end pipeline. Never raises; failures are
-  encoded in OrchestratorResult.
-- **Summarizer** — LLM call that turns raw tool results into friendly
-  natural-language summaries.
-- **REPL integration** — `python -m muru` now uses the full pipeline.
-  Welcome banner shows tool count; help command lists available tools.
-- 163 unit tests + 1 integration test, all passing.
-
-### Notes
-- Per tool plan: 2 LLM calls (planner + summarizer), ~5–15s on local 8B model.
-- Bigger models (Phase 2 with deepseek-r1:70b) substantially improve quality
-  and reduce time per call.
-- Path sandbox is the user's home directory. Configurable in Phase 2.
-
-### Known Limitations
-- Planner doesn't always set `recursive=true` for "in my X folder" queries
-  (polish item for v0.3.0 prompt tuning).
-- Summarizer can produce verbose output (target: 200 words, polish item
-  for v0.3.0).
-- No conversation context across turns — each intent is stateless. The
-  orchestrator-receives-history pattern lands in v0.3.0.
+- Tool registry, Pydantic-validated Tool wrapper, path-safety helper
+- `list_directory`, `read_file`, `get_file_info`, `search_files`
+- LLM-driven planner with robust JSON parsing
+- Orchestrator wiring planner + tool registry + summarizer
+- REPL integration: `python -m muru` is a working AI assistant
 
 ## [0.1.0] - 2026-05-04
 
-Foundation release. Establishes the core infrastructure that every future
-version builds on.
+Foundation release.
 
 ### Added
-- Project scaffolding (src layout, packages, tests, docs)
-- Apache 2.0 license
-- Professional Python project configuration via `pyproject.toml`
-- Production dependencies: ollama, rich, pyyaml, pydantic, structlog
-- Dev tooling: pytest, ruff, mypy (strict mode)
-- Structured logging with two output modes (human-readable / JSON)
-- Pydantic-validated three-layer config (defaults / user file / env vars)
-- Multi-profile LLM model selection (fast / balanced / deep)
-- Ollama client with retry logic, model availability check, custom exceptions
+- Project scaffolding, Apache 2.0 license, pyproject.toml
+- Structured logging, Pydantic-validated config, Ollama client
 - Interactive CLI REPL via `python -m muru`
-- Welcome banner, help command, graceful exit, Ctrl-C handling
-- 62 unit tests + 1 integration test, all passing
 
-### Notes
-- Default fast/balanced model: `llama3.1:8b`
-- Default deep model: `deepseek-r1:70b`
-- Both can be overridden via config or `MURU_LLM_*` env vars
-- Integration tests skipped by default; run with `pytest -m integration`
-
-[Unreleased]: https://github.com/drk230513/muru-os/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/drk230513/muru-os/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/drk230513/muru-os/releases/tag/v0.4.0
+[0.4.0-alpha1]: https://github.com/drk230513/muru-os/releases/tag/v0.4.0-alpha1
+[0.3.1]: https://github.com/drk230513/muru-os/releases/tag/v0.3.1
+[0.3.0]: https://github.com/drk230513/muru-os/releases/tag/v0.3.0
 [0.2.0]: https://github.com/drk230513/muru-os/releases/tag/v0.2.0
 [0.1.0]: https://github.com/drk230513/muru-os/releases/tag/v0.1.0

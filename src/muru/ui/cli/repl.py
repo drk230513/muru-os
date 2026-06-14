@@ -37,7 +37,7 @@ CLEAR_COMMANDS = {"clear", "/clear", "reset", "/reset"}
 def _print_welcome(console: Console, model: str, tool_count: int) -> None:
     """Print the startup banner."""
     welcome = Panel.fit(
-        "[bold cyan]Muru[/bold cyan] [dim]v0.3.0 - confirmation + conversation[/dim]\n\n"
+        "[bold cyan]Muru[/bold cyan] [dim]v0.4.0 - filesystem write tools[/dim]\n\n"
         f"Model: [yellow]{model}[/yellow]\n"
         f"Tools loaded: [green]{tool_count}[/green]\n"
         "Type [bold]help[/bold] for commands, [bold]exit[/bold] to quit.\n"

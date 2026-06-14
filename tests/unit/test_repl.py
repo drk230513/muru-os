@@ -10,6 +10,7 @@ import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 from rich.console import Console
 
 from muru.orchestrator.result import OrchestratorResult
@@ -47,7 +48,7 @@ def _make_response_result(intent: str, response: str) -> OrchestratorResult:
 # ----- Welcome / version -----
 
 
-def test_repl_prints_welcome_banner_with_v0_3_0(
+def test_repl_prints_welcome_banner_with_current_version(
     mock_client: MagicMock,
     captured_console: Console,
     monkeypatch: pytest.MonkeyPatch,
@@ -57,7 +58,7 @@ def test_repl_prints_welcome_banner_with_v0_3_0(
     output = captured_console.file.getvalue()  # type: ignore[attr-defined]
 
     assert "Muru" in output
-    assert "v0.3.0" in output
+    assert "v0.4.0" in output
     assert "test-model" in output
 
 
@@ -310,3 +311,180 @@ def test_repl_constructs_orchestrator_with_confirmation_provider(
     call_kwargs = MockOrchestrator.call_args.kwargs
     assert "confirmation_provider" in call_kwargs
     assert call_kwargs["confirmation_provider"] is not None
+
+
+# ============================================
+# Confirmation gating integration (v0.4.0)
+# ============================================
+
+
+def test_repl_does_not_invoke_tool_when_confirmation_provider_rejects(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: the REPL must NEVER silently bypass a Tier 2+ confirmation.
+
+    Last session's spinner bug: console.status() monopolized the terminal,
+    causing console.input() inside CliConfirmationProvider to return cached
+    terminal content. The decision was logged as APPROVED, the tool ran,
+    the file was overwritten - despite no visible prompt ever appearing.
+
+    This test runs the REPL with a real CliConfirmationProvider, scripts
+    the input to be 'no', and verifies that:
+    - the tool was never invoked
+    - the user-facing response indicates the action was declined
+
+    If the spinner bug returns (or any future bug auto-approves Tier 2+
+    without input), this test fails immediately.
+    """
+    from muru.policy.confirmation.cli import CliConfirmationProvider
+    from muru.policy.risk import RiskTier
+    from muru.tools.base import Tool, ToolResult
+
+    # A fake Tier 3 tool the planner will "choose"
+    class FakeArgs(BaseModel):
+        pass
+
+    class FakeResult(ToolResult):
+        pass
+
+    invoked_count = {"n": 0}
+
+    def fake_impl(args: FakeArgs) -> FakeResult:
+        invoked_count["n"] += 1
+        return FakeResult(success=True, message="should never get here")
+
+    fake_tool = Tool(
+        name="fake_dangerous",
+        description="A fake destructive tool used by integration tests.",
+        args_model=FakeArgs,
+        result_model=FakeResult,
+        implementation=fake_impl,
+        risk_tier=RiskTier.HIGH_RISK,
+    )
+
+    # Script: user submits a query, then confirmation prompts for 'yes',
+    # then user types 'no' to reject, then exits
+    monkeypatch.setattr(
+        captured_console,
+        "input",
+        _scripted_input(
+            "do the dangerous thing",  # user query
+            "no",  # confirmation rejection
+            "exit",  # exit command
+        ),
+    )
+
+    # Build the full stack manually so we use a REAL provider
+    # but a mocked planner that always picks the fake tool
+    from muru.orchestrator.orchestrator import Orchestrator
+    from muru.tools.registry import ToolRegistry
+
+    local_registry = ToolRegistry()
+    local_registry.register(fake_tool)
+
+    mock_planner = MagicMock()
+    mock_planner.plan.return_value = Plan(
+        needs_tool=True,
+        tool_name="fake_dangerous",
+        tool_args={},
+        reasoning="testing rejection path",
+    )
+
+    real_provider = CliConfirmationProvider(console=captured_console)
+    orchestrator = Orchestrator(
+        llm=mock_client,
+        planner=mock_planner,
+        registry=local_registry,
+        confirmation_provider=real_provider,
+    )
+
+    with patch("muru.ui.cli.repl.Orchestrator", return_value=orchestrator):
+        run_repl(mock_client, console=captured_console)
+
+    # Critical assertion: the tool was NEVER invoked, because the user rejected
+    assert invoked_count["n"] == 0, (
+        f"Tool was invoked {invoked_count['n']} times despite user rejection - "
+        "this means confirmation gating was bypassed. SECURITY BUG."
+    )
+
+    # Output should show the polite decline
+    output = captured_console.file.getvalue()  # type: ignore[attr-defined]
+    assert "will not" in output.lower() or "won't" in output.lower(), (
+        f"REPL did not show a decline message. Output was:\n{output}"
+    )
+
+
+def test_repl_does_invoke_tool_when_confirmation_provider_approves(
+    mock_client: MagicMock,
+    captured_console: Console,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Companion to the rejection test: when the user types 'yes', the tool DOES run."""
+    from muru.policy.confirmation.cli import CliConfirmationProvider
+    from muru.policy.risk import RiskTier
+    from muru.tools.base import Tool, ToolResult
+
+    class FakeArgs(BaseModel):
+        pass
+
+    class FakeResult(ToolResult):
+        pass
+
+    invoked_count = {"n": 0}
+
+    def fake_impl(args: FakeArgs) -> FakeResult:
+        invoked_count["n"] += 1
+        return FakeResult(success=True, message="ran ok")
+
+    fake_tool = Tool(
+        name="fake_dangerous",
+        description="A fake destructive tool used by integration tests.",
+        args_model=FakeArgs,
+        result_model=FakeResult,
+        implementation=fake_impl,
+        risk_tier=RiskTier.HIGH_RISK,
+    )
+
+    # Mock the summarizer too, since the tool will actually run
+    mock_client.chat.return_value = "Tool ran successfully"
+
+    monkeypatch.setattr(
+        captured_console,
+        "input",
+        _scripted_input(
+            "do the dangerous thing",
+            "yes",  # approval
+            "exit",
+        ),
+    )
+
+    from muru.orchestrator.orchestrator import Orchestrator
+    from muru.tools.registry import ToolRegistry
+
+    local_registry = ToolRegistry()
+    local_registry.register(fake_tool)
+
+    mock_planner = MagicMock()
+    mock_planner.plan.return_value = Plan(
+        needs_tool=True,
+        tool_name="fake_dangerous",
+        tool_args={},
+        reasoning="testing approval path",
+    )
+
+    real_provider = CliConfirmationProvider(console=captured_console)
+    orchestrator = Orchestrator(
+        llm=mock_client,
+        planner=mock_planner,
+        registry=local_registry,
+        confirmation_provider=real_provider,
+    )
+
+    with patch("muru.ui.cli.repl.Orchestrator", return_value=orchestrator):
+        run_repl(mock_client, console=captured_console)
+
+    assert invoked_count["n"] == 1, (
+        f"Tool was invoked {invoked_count['n']} times, expected exactly 1 after user approval"
+    )
